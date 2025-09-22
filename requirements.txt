@@ -1,0 +1,9 @@
+streamlit
+pandas
+requests
+PyPDF2
+python-docx
+openpyxl
+sentence-transformers
+google-generativeai
+qdrant-client
