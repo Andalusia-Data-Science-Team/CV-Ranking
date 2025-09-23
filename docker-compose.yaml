@@ -9,3 +9,10 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
     command: streamlit run app.py --server.port 8501 --server.address=0.0.0.0
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    depends_on:
+      - cv-matcher
+    command: tunnel --url http://cv-matcher:8501
