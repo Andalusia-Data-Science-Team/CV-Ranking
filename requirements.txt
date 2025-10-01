@@ -7,3 +7,7 @@ openpyxl
 sentence-transformers
 google-generativeai
 qdrant-client
+qdrant-client
+dash
+dash-bootstrap-components
+plotly

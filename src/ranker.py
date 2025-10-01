@@ -7,8 +7,11 @@ from datetime import datetime
 import google.generativeai as genai
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill
-
-import src.config as config # uses GEMINI_API_KEY from config.py
+from sentence_transformers import SentenceTransformer
+from qdrant_client import QdrantClient
+from qdrant_client.http import models
+import numpy as np
+import src.config as config  # uses GEMINI_API_KEY from config.py
 
 # ----------------------------
 # Gemini Setup
@@ -16,8 +19,15 @@ import src.config as config # uses GEMINI_API_KEY from config.py
 genai.configure(api_key=config.GEMINI_API_KEY)
 GEMINI_MODEL = "gemini-2.0-flash-exp"
 
+EMBED_MODEL = "sentence-transformers/multi-qa-MiniLM-L6-cos-v1"
+sbert_model = SentenceTransformer(EMBED_MODEL)
+
+# Qdrant client (local or cloud - adjust URL/port if needed)
+qdrant = QdrantClient("http://localhost:6333")
+COLLECTION_NAME = "cv_ranking"
+
 # ----------------------------
-# CV Parsing (Moved to the top)
+# CV Parsing
 # ----------------------------
 def extract_text_from_pdf(file_path):
     try:
@@ -78,7 +88,7 @@ def load_cvs_from_dataframe(df):
     return candidates
 
 # ----------------------------
-# Prompt Builder
+# Prompt Builder (Gemini)
 # ----------------------------
 def build_prompt(job_description, batch):
     return f"""You are an expert HR recruiter.
@@ -111,7 +121,7 @@ Expected JSON format:
 """
 
 # ----------------------------
-# Ranking Functions
+# Ranking with Gemini
 # ----------------------------
 def rank_with_gemini(cvs, job_description, api_key=None, batch_size=3):
     results = []
@@ -186,8 +196,63 @@ def rank_with_gemini(cvs, job_description, api_key=None, batch_size=3):
 
     return results
 
+# ----------------------------
+# Ranking with Embeddings (SBERT + Qdrant)
+# ----------------------------
+def rank_with_embeddings(cvs, job_description, top_k=5):
+    # Ensure collection exists
+    if not qdrant.collection_exists(COLLECTION_NAME):
+        qdrant.recreate_collection(
+            collection_name=COLLECTION_NAME,
+            vectors_config=models.VectorParams(size=384, distance=models.Distance.COSINE),
+        )
 
+    # Clear old data
+    qdrant.delete_collection(COLLECTION_NAME)
+    qdrant.recreate_collection(
+        collection_name=COLLECTION_NAME,
+        vectors_config=models.VectorParams(size=384, distance=models.Distance.COSINE),
+    )
 
+    # Insert CV embeddings
+    vectors = []
+    for idx, c in enumerate(cvs):
+        emb = sbert_model.encode(c["text"] or "")
+        vectors.append(models.PointStruct(
+            id=idx,
+            vector=emb.tolist(),
+            payload={"filename": c["filename"], "name": c["name"], "cv_link": c["cv_link"], "text": c["text"]}
+        ))
+    qdrant.upsert(collection_name=COLLECTION_NAME, points=vectors)
+
+    # Embed job description
+    job_emb = sbert_model.encode(job_description).tolist()
+
+    # Search in Qdrant
+    search_results = qdrant.search(
+        collection_name=COLLECTION_NAME,
+        query_vector=job_emb,
+        limit=top_k
+    )
+
+    # Convert to same results format
+    results = []
+    for r in search_results:
+        payload = r.payload
+        score = round(r.score * 100, 2)  # scale similarity 0–1 → 0–100
+        results.append({
+            "filename": payload.get("filename", "Unknown"),
+            "name": payload.get("name", "Unknown"),
+            "score": score,
+            "reasoning": f"Semantic similarity score {score}",
+            "cv_link": payload.get("cv_link", "")
+        })
+
+    return results
+
+# ----------------------------
+# Save to Excel
+# ----------------------------
 def save_results_to_excel(results_list, job_description=None, output_dir=".", output_path=None):
     df_out = pd.DataFrame(results_list)
 
@@ -196,7 +261,7 @@ def save_results_to_excel(results_list, job_description=None, output_dir=".", ou
         if col not in df_out.columns:
             df_out[col] = ""
 
-    df_out["status"] = df_out["score"].apply(lambda x: "Match" if int(x) >= 60 else "Not Match")
+    df_out["status"] = df_out["score"].apply(lambda x: "Match" if float(x) >= 60 else "Not Match")
     df_out = df_out[required_cols].sort_values(by="score", ascending=False)
 
     wb = Workbook()
@@ -212,7 +277,7 @@ def save_results_to_excel(results_list, job_description=None, output_dir=".", ou
     for i, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=len(headers)), start=2):
         status = ws[f"C{i}"].value
         try:
-            score = int(ws[f"B{i}"].value)
+            score = float(ws[f"B{i}"].value)
         except:
             score = 0
 
@@ -234,7 +299,7 @@ def save_results_to_excel(results_list, job_description=None, output_dir=".", ou
 
     # Summary
     ws_summary = wb.create_sheet("Summary")
-    avg_score = df_out["score"].mean() if not df_out.empty else 0
+    avg_score = df_out["score"].astype(float).mean() if not df_out.empty else 0
     top_candidate = df_out.iloc[0] if not df_out.empty else None
     ws_summary["A1"], ws_summary["B1"] = "Average Score", avg_score
     if top_candidate is not None:
