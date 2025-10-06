@@ -4,30 +4,32 @@ import docx
 import PyPDF2
 import pandas as pd
 from datetime import datetime
-import google.generativeai as genai
+from fireworks.client import Fireworks
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill
 from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 import numpy as np
-import src.config as config  # uses GEMINI_API_KEY from config.py
+import src.config as config
 
 # ----------------------------
-# Gemini Setup
+# Fireworks Setup - USING LLAMA FOR RELIABILITY
 # ----------------------------
-genai.configure(api_key=config.GEMINI_API_KEY)
-GEMINI_MODEL = "gemini-2.0-flash-exp"
+fw = Fireworks(api_key=config.FIREWORKS_API_KEY)
+
+# Use Llama 3.3 70B - Much better for structured output than Qwen thinking model
+LLM_MODEL = "accounts/fireworks/models/llama-v3p3-70b-instruct"
 
 EMBED_MODEL = "sentence-transformers/multi-qa-MiniLM-L6-cos-v1"
 sbert_model = SentenceTransformer(EMBED_MODEL)
 
-# Qdrant client (local or cloud - adjust URL/port if needed)
+# Qdrant client
 qdrant = QdrantClient("http://localhost:6333")
 COLLECTION_NAME = "cv_ranking"
 
 # ----------------------------
-# CV Parsing
+# CV Parsing Functions (unchanged)
 # ----------------------------
 def extract_text_from_pdf(file_path):
     try:
@@ -61,14 +63,12 @@ def extract_text(file_path):
 
 def load_cvs_from_dataframe(df):
     candidates = []
-
     if isinstance(df, list):
         df = pd.DataFrame(df)
 
     for idx, row in df.iterrows():
         cv_path = row.get("local_cv_path")
         cv_link = row.get("CV", "")
-
         name = row.get("Full Name") or row.get("full name") or row.get("fullname") or f"Candidate {idx+1}"
 
         text = ""
@@ -88,133 +88,167 @@ def load_cvs_from_dataframe(df):
     return candidates
 
 # ----------------------------
-# Prompt Builder (Gemini)
+# Ranking with Fireworks (Llama 3.3)
 # ----------------------------
-def build_prompt(job_description, batch):
-    return f"""You are an expert HR recruiter.
-Analyze these CVs against the job description and provide accurate scoring.
-
-⚠️ CRITICAL INSTRUCTIONS ⚠️
-- Respond with ONLY valid JSON.
-- Do not include explanations, markdown, or text outside JSON.
-- JSON must be a valid array of objects.
-
-Job Description:
-{job_description[:1500]}
-
-Scoring Criteria:
-90-100 = Perfect match
-80-89  = Strong match
-60-79  = Good match
-40-59  = Moderate match
-20-39  = Weak match
-0-19   = No match
-
-CVs to analyze:
-{json.dumps([{"filename": c["filename"], "text": c["text"][:1000]} for c in batch], indent=2)}
-
-Expected JSON format:
-[
-  {{"filename": "cv1.pdf", "score": 85, "reasoning": "Matched required qualifications"}},
-  {{"filename": "cv2.pdf", "score": 20, "reasoning": "Unrelated background"}}
-]
-"""
-
-# ----------------------------
-# Ranking with Gemini
-# ----------------------------
-def rank_with_gemini(cvs, job_description, api_key=None, batch_size=3):
+def rank_with_gemini(cvs, job_description, api_key=None, batch_size=1):
+    """
+    Rank CVs using Fireworks AI API with Llama 3.3 70B.
+    Optimized for medical/healthcare recruitment.
+    """
     results = []
+    
     if not api_key:
-        print("⚠️ No Gemini API key found, using keyword-based scoring.")
+        print("⚠️ No Fireworks API key found.")
         for c in cvs:
-            score = 0
-            reasoning = "Using fallback scoring due to missing API key."
-            if "python" in c["text"].lower() and "data science" in c["text"].lower():
-                score = 80
-                reasoning = "Keyword match: Python and Data Science."
             results.append({
                 "filename": c["filename"],
                 "name": c["name"],
-                "score": score,
-                "reasoning": reasoning,
+                "score": 0,
+                "reasoning": "API key missing - cannot analyze",
                 "cv_link": c.get("cv_link", "")
             })
         return results
 
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(GEMINI_MODEL)
-
-    for i in range(0, len(cvs), batch_size):
-        batch = cvs[i:i+batch_size]
-        prompt = build_prompt(job_description, batch)
-
+    # Process CVs one at a time
+    for i, cv in enumerate(cvs):
         try:
-            response = model.generate_content(prompt)
+            print(f"🔥 Analyzing CV {i+1}/{len(cvs)}: {cv['name']}")
+            
+            # Medical-specific prompt
+            prompt = f"""You are an expert medical recruiter specializing in healthcare hiring. Analyze this doctor's CV against the job requirements.
 
-            parsed = []
+JOB REQUIREMENTS:
+{job_description[:1500]}
+
+CANDIDATE CV:
+Name: {cv['name']}
+{cv['text'][:2000]}
+
+EVALUATION CRITERIA for Medical Professionals:
+- Medical qualifications, degrees, and certifications
+- Specialization match (e.g., Cardiology, Pediatrics, Surgery, etc.)
+- Years of clinical experience and practice settings
+- Specific procedures, treatments, or techniques mentioned
+- Hospital affiliations and training programs
+- Languages spoken (important for patient communication)
+- Publications, research, or academic contributions
+- Board certifications and licenses
+
+SCORING SCALE:
+- 90-100: Excellent match - specialization perfect, extensive relevant experience
+- 75-89: Strong match - right specialization, good experience level
+- 60-74: Good match - relevant medical background, some experience
+- 40-59: Moderate match - general medical background, limited specialty match
+- 20-39: Weak match - different specialization or insufficient experience
+- 0-19: Poor match - unrelated medical field or entry-level when senior needed
+
+Analyze the medical qualifications and specialization match carefully.
+
+Respond with ONLY this JSON format:
+{{"score": 85, "reasoning": "Brief explanation focusing on medical qualifications and specialty match"}}
+
+JSON only:"""
+
+            response = fw.chat.completions.create(
+                model=LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": "You are an expert medical recruiter with deep knowledge of healthcare qualifications and specializations. Respond only with valid JSON."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.2,
+                max_tokens=400
+            )
+
+            raw_text = response.choices[0].message.content.strip()
+            
+            # Parse JSON
+            parsed = None
             try:
                 import re
-                raw_text = response.text.strip()
-                match = re.search(r'\[.*\]', raw_text, re.S)
-                if match:
-                    raw_text = match.group(0)
-                parsed = json.loads(raw_text)
-            except Exception as e:
-                print("⚠️ Gemini response was not valid JSON:", e)
-                parsed = []
-
-            for r in parsed:
-                cand = next((c for c in batch if c["filename"] == r.get("filename")), None)
+                # Clean markdown if present
+                clean_text = re.sub(r'```(?:json)?\s*', '', raw_text)
+                clean_text = re.sub(r'```', '', clean_text).strip()
+                
+                # Try direct parse first
+                parsed = json.loads(clean_text)
+                
+            except json.JSONDecodeError:
+                # Extract JSON with regex
+                import re
+                json_match = re.search(r'\{[^{}]*"score"\s*:\s*\d+[^{}]*"reasoning"\s*:[^{}]*\}', raw_text, re.DOTALL)
+                if json_match:
+                    try:
+                        parsed = json.loads(json_match.group(0))
+                    except:
+                        pass
+            
+            # Process result
+            if parsed and "score" in parsed and "reasoning" in parsed:
+                score = int(parsed["score"])
+                reasoning = parsed["reasoning"].strip()
+                
+                # Validate score
+                score = max(0, min(100, score))
+                
                 results.append({
-                    "filename": r.get("filename", "Unknown"),
-                    "name": cand["name"] if cand else r.get("filename"),
-                    "score": int(r.get("score", 0)),
-                    "reasoning": r.get("reasoning", ""),
-                    "cv_link": cand["cv_link"] if cand and "cv_link" in cand else ""
+                    "filename": cv["filename"],
+                    "name": cv["name"],
+                    "score": score,
+                    "reasoning": reasoning,
+                    "cv_link": cv.get("cv_link", "")
                 })
-
-            if not parsed:
-                for c in batch:
-                    results.append({
-                        "filename": c["filename"],
-                        "name": c["name"],
-                        "score": 0,
-                        "reasoning": "Gemini failed to return valid JSON",
-                        "cv_link": c.get("cv_link", "")
-                    })
+                print(f"   ✅ Score: {score}/100")
+                print(f"   📋 {reasoning[:80]}...")
+                
+            else:
+                # If parsing completely fails
+                print(f"   ⚠️ JSON parsing failed")
+                print(f"   Raw response: {raw_text[:200]}")
+                results.append({
+                    "filename": cv["filename"],
+                    "name": cv["name"],
+                    "score": 0,
+                    "reasoning": "Unable to analyze CV - please review manually",
+                    "cv_link": cv.get("cv_link", "")
+                })
 
         except Exception as e:
-            for c in batch:
-                results.append({
-                    "filename": c["filename"],
-                    "name": c["name"],
-                    "score": 0,
-                    "reasoning": f"Error during analysis: {e}",
-                    "cv_link": c.get("cv_link", "")
-                })
+            print(f"   ❌ Error: {str(e)[:100]}")
+            import traceback
+            traceback.print_exc()
+            results.append({
+                "filename": cv["filename"],
+                "name": cv["name"],
+                "score": 0,
+                "reasoning": f"Processing error: {str(e)[:80]}",
+                "cv_link": cv.get("cv_link", "")
+            })
 
     return results
 
+def analyze_with_keywords(cv_text, job_description):
+    """
+    REMOVED - No keyword fallback for medical CVs.
+    Medical qualifications require proper AI analysis, not keyword matching.
+    """
+    return 0
+
 # ----------------------------
-# Ranking with Embeddings (SBERT + Qdrant)
+# Embedding-based ranking (unchanged)
 # ----------------------------
 def rank_with_embeddings(cvs, job_description, top_k=5):
-    # Ensure collection exists
     if not qdrant.collection_exists(COLLECTION_NAME):
         qdrant.recreate_collection(
             collection_name=COLLECTION_NAME,
             vectors_config=models.VectorParams(size=384, distance=models.Distance.COSINE),
         )
 
-    # Clear old data
     qdrant.delete_collection(COLLECTION_NAME)
     qdrant.recreate_collection(
         collection_name=COLLECTION_NAME,
         vectors_config=models.VectorParams(size=384, distance=models.Distance.COSINE),
     )
 
-    # Insert CV embeddings
     vectors = []
     for idx, c in enumerate(cvs):
         emb = sbert_model.encode(c["text"] or "")
@@ -225,33 +259,29 @@ def rank_with_embeddings(cvs, job_description, top_k=5):
         ))
     qdrant.upsert(collection_name=COLLECTION_NAME, points=vectors)
 
-    # Embed job description
     job_emb = sbert_model.encode(job_description).tolist()
-
-    # Search in Qdrant
     search_results = qdrant.search(
         collection_name=COLLECTION_NAME,
         query_vector=job_emb,
         limit=top_k
     )
 
-    # Convert to same results format
     results = []
     for r in search_results:
         payload = r.payload
-        score = round(r.score * 100, 2)  # scale similarity 0–1 → 0–100
+        score = round(r.score * 100, 2)
         results.append({
             "filename": payload.get("filename", "Unknown"),
             "name": payload.get("name", "Unknown"),
             "score": score,
-            "reasoning": f"Semantic similarity score {score}",
+            "reasoning": f"Semantic similarity: {score}%",
             "cv_link": payload.get("cv_link", "")
         })
 
     return results
 
 # ----------------------------
-# Save to Excel
+# Save to Excel (unchanged)
 # ----------------------------
 def save_results_to_excel(results_list, job_description=None, output_dir=".", output_path=None):
     df_out = pd.DataFrame(results_list)
@@ -273,7 +303,6 @@ def save_results_to_excel(results_list, job_description=None, output_dir=".", ou
     for _, row in df_out.iterrows():
         ws.append([row.get(h, "") for h in headers])
 
-    # Apply coloring
     for i, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=len(headers)), start=2):
         status = ws[f"C{i}"].value
         try:
@@ -291,13 +320,11 @@ def save_results_to_excel(results_list, job_description=None, output_dir=".", ou
         for cell in row:
             cell.fill = fill
 
-        # Add CV hyperlink
         cv_link = ws[f"E{i}"].value
         if cv_link and str(cv_link).startswith("http"):
             ws[f"E{i}"].hyperlink = cv_link
             ws[f"E{i}"].style = "Hyperlink"
 
-    # Summary
     ws_summary = wb.create_sheet("Summary")
     avg_score = df_out["score"].astype(float).mean() if not df_out.empty else 0
     top_candidate = df_out.iloc[0] if not df_out.empty else None
@@ -305,9 +332,8 @@ def save_results_to_excel(results_list, job_description=None, output_dir=".", ou
     if top_candidate is not None:
         ws_summary["A2"], ws_summary["B2"] = "Top Candidate", top_candidate.get("name", "Unknown")
         ws_summary["A3"], ws_summary["B3"] = "Top Score", top_candidate.get("score", 0)
-        ws_summary["A4"], ws_summary["B4"] = "Top Candidate CV Link", top_candidate.get("cv_link", "")
+        ws_summary["A4"], ws_summary["B4"] = "Top CV Link", top_candidate.get("cv_link", "")
 
-    # Decide output filename
     if output_path:
         final_path = output_path
     else:

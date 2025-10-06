@@ -211,11 +211,11 @@ def create_single_tab():
         dbc.Row([
             dbc.Col([
                 create_upload_component("cv-single", "Upload CV", "(.pdf, .docx)", "fa-file-pdf"),
-                html.Div(id="cv-preview", className="mt-3")
+                html.Div(id="cv-preview")  # ← Removed className="mt-3"
             ], md=6),
             dbc.Col([
                 create_upload_component("jd-single", "Upload Job Description", "(.txt)", "fa-file-text"),
-                html.Div(id="jd-single-preview", className="mt-3")
+                html.Div(id="jd-single-preview")  # ← Removed className="mt-3"
             ], md=6)
         ], className="mb-4"),
         
@@ -231,7 +231,6 @@ def create_single_tab():
         
         html.Div(id="single-results")
     ]
-
 # File Upload Callbacks
 @app.callback(
     [Output('leads-preview', 'children'),
@@ -338,9 +337,10 @@ def process_bulk_analysis(n_clicks, leads_data, jd_text):
         results = rank_with_gemini(
             cvs=cvs,
             job_description=jd_text,
-            api_key=config.GEMINI_API_KEY,
+            api_key=config.FIREWORKS_API_KEY,
             batch_size=3
         )
+        
         print(f"Ranking complete: {len(results)} results")
         
         # Save results to Excel
@@ -478,16 +478,11 @@ def update_cv_preview(contents, filename):
     if contents is None:
         return ""
     
-    preview = dbc.Card([
-        dbc.CardHeader([
-            html.I(className="fas fa-check-circle text-success me-2"),
-            f"✓ {filename} uploaded"
-        ]),
-        dbc.CardBody([
-            html.P("CV uploaded successfully. Ready for analysis.", 
-                className="text-muted mb-0")
-        ])
-    ], className="mt-3")
+    # Minimal alert with no margins
+    preview = dbc.Alert([
+        html.I(className="fas fa-check-circle me-2"),
+        f"✓ {filename} uploaded"
+    ], color="success", className="py-1 mb-0", style={'fontSize': '14px'})
     
     return preview
 
@@ -505,22 +500,17 @@ def update_jd_single_preview(contents, filename):
         decoded = base64.b64decode(content_string)
         jd_text = decoded.decode('utf-8')
         
-        preview = dbc.Card([
-            dbc.CardHeader([
-                html.I(className="fas fa-check-circle text-success me-2"),
-                f"✓ {filename} uploaded"
-            ]),
-            dbc.CardBody([
-                html.P(jd_text[:300] + "..." if len(jd_text) > 300 else jd_text,
-                    style={'fontSize': '14px', 'lineHeight': '1.5'})
-            ])
-        ], className="mt-3")
+        # Minimal alert with no margins
+        preview = dbc.Alert([
+            html.I(className="fas fa-check-circle me-2"),
+            f"✓ {filename} uploaded"
+        ], color="success", className="py-1 mb-0", style={'fontSize': '14px'})
         
         return preview
         
     except Exception as e:
-        return dbc.Alert(f"Error reading job description: {str(e)}", color="danger")
-
+        return dbc.Alert(f"Error: {str(e)}", color="danger", className="py-1 mb-0", style={'fontSize': '14px'})
+    
 @app.callback(
     Output('single-results', 'children'),
     Input('analyze-btn', 'n_clicks'),
@@ -563,7 +553,7 @@ def analyze_single_cv(n_clicks, cv_contents, cv_filename, jd_contents):
         results = rank_with_gemini(
             cvs=[candidate],
             job_description=jd_text,
-            api_key=config.GEMINI_API_KEY,
+            api_key=config.FIREWORKS_API_KEY,  # <- Correct!
             batch_size=1
         )
         

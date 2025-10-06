@@ -11,3 +11,4 @@ qdrant-client
 dash
 dash-bootstrap-components
 plotly
+fireworks-ai

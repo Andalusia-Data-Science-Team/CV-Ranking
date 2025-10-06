@@ -12,8 +12,11 @@ services:
       PYTHONUNBUFFERED: 1
       QDRANT_HOST: qdrant
       QDRANT_PORT: 6333
+
+      # 🔥 Fireworks API Key (replace with your actual key or use .env)
+      FIREWORKS_API_KEY: ${FIREWORKS_API_KEY}
     command: >
-      python app.py  # Use the python command to run the Dash app
+      python app.py
     restart: always
     networks:
       - cvnet
