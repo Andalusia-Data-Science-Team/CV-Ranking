@@ -40,3 +40,4 @@ volumes:
 networks:
   cvnet:
     driver: bridge
+
