@@ -14,6 +14,7 @@ from datetime import datetime
 
 from src.downloader import download_cvs_from_leads
 from src.ranker import load_cvs_from_dataframe, rank_with_gemini, save_results_to_excel
+from src.jd_extractor import extract_jd_from_bytes  # NEW IMPORT
 import src.config as config
 
 # Initialize Dash app with modern Bootstrap theme
@@ -175,7 +176,7 @@ def create_bulk_tab():
                 html.Div(id="leads-preview", className="mt-3")
             ], md=6),
             dbc.Col([
-                create_upload_component("jd-bulk", "Upload Job Description", "(.txt)", "fa-file-text"),
+                create_upload_component("jd-bulk", "Upload Job Description", "(.txt, .pdf, .docx)", "fa-file-text"),
                 html.Div(id="jd-preview", className="mt-3")
             ], md=6)
         ], className="mb-4"),
@@ -211,11 +212,11 @@ def create_single_tab():
         dbc.Row([
             dbc.Col([
                 create_upload_component("cv-single", "Upload CV", "(.pdf, .docx)", "fa-file-pdf"),
-                html.Div(id="cv-preview")  # ← Removed className="mt-3"
+                html.Div(id="cv-preview")
             ], md=6),
             dbc.Col([
-                create_upload_component("jd-single", "Upload Job Description", "(.txt)", "fa-file-text"),
-                html.Div(id="jd-single-preview")  # ← Removed className="mt-3"
+                create_upload_component("jd-single", "Upload Job Description", "(.txt, .pdf, .docx)", "fa-file-text"),
+                html.Div(id="jd-single-preview")
             ], md=6)
         ], className="mb-4"),
         
@@ -231,6 +232,7 @@ def create_single_tab():
         
         html.Div(id="single-results")
     ]
+
 # File Upload Callbacks
 @app.callback(
     [Output('leads-preview', 'children'),
@@ -263,6 +265,7 @@ def update_leads_preview(contents, filename):
     except Exception as e:
         return dbc.Alert(f"Error reading file: {str(e)}", color="danger"), None
 
+# UPDATED: Job Description Upload for Bulk Tab
 @app.callback(
     [Output('jd-preview', 'children'),
      Output('jd-text', 'data')],
@@ -276,11 +279,16 @@ def update_jd_preview(contents, filename):
     try:
         content_type, content_string = contents.split(',')
         decoded = base64.b64decode(content_string)
-        jd_text = decoded.decode('utf-8')
+        
+        # Extract text based on file type
+        jd_text = extract_jd_from_bytes(decoded, filename)
+        
+        if not jd_text:
+            return dbc.Alert(f"Failed to extract text from {filename}", color="danger"), None
         
         preview = dbc.Alert([
             html.I(className="fas fa-check-circle me-2"),
-            f"✓ {filename} uploaded successfully"
+            f"✓ {filename} uploaded successfully ({len(jd_text)} characters)"
         ], color="success", className="mt-3")
         
         return preview, jd_text
@@ -288,7 +296,7 @@ def update_jd_preview(contents, filename):
     except Exception as e:
         return dbc.Alert(f"Error reading job description: {str(e)}", color="danger"), None
 
-# Process Button Callback - NOW WITH REAL PROCESSING
+# Process Button Callback
 @app.callback(
     [Output('progress-content', 'children'),
      Output('results-content', 'children'),
@@ -365,7 +373,7 @@ def process_bulk_analysis(n_clicks, leads_data, jd_text):
             ], color="warning")
             return error_msg, "", None, None
         
-        # ✅ Only keep two metric cards
+        # Metrics
         results_content = dbc.Row([
             dbc.Col([
                 dbc.Card([
@@ -387,7 +395,7 @@ def process_bulk_analysis(n_clicks, leads_data, jd_text):
             ], md=6),
         ], className="mb-4")
         
-        # ✅ Add download button
+        # Download button
         download_button = html.Div([
             dbc.Button(
                 [html.I(className="fas fa-download me-2"), "Download Results"],
@@ -400,7 +408,7 @@ def process_bulk_analysis(n_clicks, leads_data, jd_text):
             )
         ], className="mb-3")
         
-        # ✅ Add results table
+        # Results table
         results_table = dash_table.DataTable(
             id="results-table",
             columns=[{"name": col, "id": col} for col in results_df.columns],
@@ -478,7 +486,6 @@ def update_cv_preview(contents, filename):
     if contents is None:
         return ""
     
-    # Minimal alert with no margins
     preview = dbc.Alert([
         html.I(className="fas fa-check-circle me-2"),
         f"✓ {filename} uploaded"
@@ -486,40 +493,49 @@ def update_cv_preview(contents, filename):
     
     return preview
 
+# UPDATED: Job Description Upload for Single CV Tab
 @app.callback(
-    Output('jd-single-preview', 'children'),
+    [Output('jd-single-preview', 'children'),
+     Output('jd-text', 'data', allow_duplicate=True)],
     Input('upload-jd-single', 'contents'),
-    State('upload-jd-single', 'filename')
+    State('upload-jd-single', 'filename'),
+    prevent_initial_call=True
 )
 def update_jd_single_preview(contents, filename):
     if contents is None:
-        return ""
+        return "", None
     
     try:
         content_type, content_string = contents.split(',')
         decoded = base64.b64decode(content_string)
-        jd_text = decoded.decode('utf-8')
         
-        # Minimal alert with no margins
+        # Extract text based on file type
+        jd_text = extract_jd_from_bytes(decoded, filename)
+        
+        if not jd_text:
+            return dbc.Alert(f"Failed to extract text from {filename}", color="danger", 
+                           className="py-1 mb-0", style={'fontSize': '14px'}), None
+        
         preview = dbc.Alert([
             html.I(className="fas fa-check-circle me-2"),
-            f"✓ {filename} uploaded"
+            f"✓ {filename} uploaded ({len(jd_text)} chars)"
         ], color="success", className="py-1 mb-0", style={'fontSize': '14px'})
         
-        return preview
+        return preview, jd_text
         
     except Exception as e:
-        return dbc.Alert(f"Error: {str(e)}", color="danger", className="py-1 mb-0", style={'fontSize': '14px'})
+        return dbc.Alert(f"Error: {str(e)}", color="danger", 
+                        className="py-1 mb-0", style={'fontSize': '14px'}), None
     
 @app.callback(
     Output('single-results', 'children'),
     Input('analyze-btn', 'n_clicks'),
     [State('upload-cv-single', 'contents'),
      State('upload-cv-single', 'filename'),
-     State('upload-jd-single', 'contents')]
+     State('jd-text', 'data')]
 )
-def analyze_single_cv(n_clicks, cv_contents, cv_filename, jd_contents):
-    if n_clicks is None or cv_contents is None or jd_contents is None:
+def analyze_single_cv(n_clicks, cv_contents, cv_filename, jd_text):
+    if n_clicks is None or cv_contents is None or jd_text is None:
         return ""
     
     try:
@@ -536,11 +552,6 @@ def analyze_single_cv(n_clicks, cv_contents, cv_filename, jd_contents):
         from src.ranker import extract_text
         cv_text = extract_text(temp_cv_path)
         
-        # Decode JD
-        jd_content_type, jd_content_string = jd_contents.split(',')
-        jd_decoded = base64.b64decode(jd_content_string)
-        jd_text = jd_decoded.decode('utf-8')
-        
         # Create candidate object
         candidate = {
             "filename": cv_filename,
@@ -553,7 +564,7 @@ def analyze_single_cv(n_clicks, cv_contents, cv_filename, jd_contents):
         results = rank_with_gemini(
             cvs=[candidate],
             job_description=jd_text,
-            api_key=config.FIREWORKS_API_KEY,  # <- Correct!
+            api_key=config.FIREWORKS_API_KEY,
             batch_size=1
         )
         
@@ -566,7 +577,7 @@ def analyze_single_cv(n_clicks, cv_contents, cv_filename, jd_contents):
         
         result = results[0]
         score = result['score']
-        status = result['status'] if 'status' in result else ("Match" if score >= 60 else "No Match")
+        status = result.get('status', "Match" if score >= 60 else "No Match")
         reasoning = result['reasoning']
         
         # Score gauge chart
