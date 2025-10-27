@@ -13,13 +13,14 @@ from qdrant_client.http import models
 import numpy as np
 import re
 import src.config as config
+print("✅ Running latest version of app.py")
 
 # ----------------------------
-# Fireworks Setup - USING LLAMA FOR RELIABILITY
+# Fireworks Setup
 # ----------------------------
 fw = Fireworks(api_key=config.FIREWORKS_API_KEY)
 
-# Use Llama 3.3 70B - Much better for structured output than Qwen thinking model
+# Use Llama 3.3 70B - Much better for structured output
 LLM_MODEL = "accounts/fireworks/models/llama-v3p3-70b-instruct"
 
 EMBED_MODEL = "sentence-transformers/multi-qa-MiniLM-L6-cos-v1"
@@ -72,8 +73,8 @@ def is_valid_cv_content(text):
     # Check for common CV indicators (at least one should be present)
     cv_indicators = [
         r'\b(experience|education|skills|qualifications|employment|work history)\b',
-        r'\b(bachelor|master|phd|degree|university|college)\b',
-        r'\b(hospital|clinic|medical|doctor|physician|surgeon)\b',
+        r'\b(bachelor|master|phd|degree|university|college|diploma|certification)\b',
+        r'\b(company|organization|firm|startup|enterprise|corporation)\b',
         r'\b(email|phone|address|contact)\b',
         r'\b(january|february|march|april|may|june|july|august|september|october|november|december|\d{4})\b'
     ]
@@ -182,7 +183,7 @@ def extract_text(file_path):
     return ""
 
 # ----------------------------
-# NEW: Job Description Loading Function
+# Job Description Loading Function
 # ----------------------------
 def load_job_description(job_description_input):
     """
@@ -248,13 +249,13 @@ def load_cvs_from_dataframe(df):
     return candidates
 
 # ----------------------------
-# Ranking with Fireworks (Llama 3.3) - WITH VALIDATION
+# Ranking with Fireworks (Llama 3.3) - UNIVERSAL FOR ALL SPECIALTIES
 # ----------------------------
 def rank_with_gemini(cvs, job_description, api_key=None, batch_size=1):
     """
     Rank CVs using Fireworks AI API with Llama 3.3 70B.
-    Optimized for medical/healthcare recruitment.
-    Now includes CV validation to filter out invalid CVs.
+    Works for all types of recruitment (IT, Healthcare, Finance, Engineering, etc.)
+    Includes CV validation to filter out invalid CVs.
     """
     # Load job description if it's a file path
     jd_text = load_job_description(job_description)
@@ -300,8 +301,8 @@ def rank_with_gemini(cvs, job_description, api_key=None, batch_size=1):
             # CV is valid - proceed with AI analysis
             print(f"   ✅ CV validation passed - proceeding with analysis")
             
-            # Medical-specific prompt
-            prompt = f"""You are an expert medical recruiter specializing in healthcare hiring. Analyze this doctor's CV against the job requirements.
+            # UNIVERSAL recruitment prompt that works for ALL specialties
+            prompt = f"""You are an expert recruiter with experience across all industries and specialties. Analyze this candidate's CV against the job requirements.
 
 JOB REQUIREMENTS:
 {jd_text[:1500]}
@@ -310,35 +311,53 @@ CANDIDATE CV:
 Name: {cv['name']}
 {cv['text'][:2000]}
 
-EVALUATION CRITERIA for Medical Professionals:
-- Medical qualifications, degrees, and certifications
-- Specialization match (e.g., Cardiology, Pediatrics, Surgery, etc.)
-- Years of clinical experience and practice settings
-- Specific procedures, treatments, or techniques mentioned
-- Hospital affiliations and training programs
-- Languages spoken (important for patient communication)
-- Publications, research, or academic contributions
-- Board certifications and licenses
+EVALUATION CRITERIA (Universal for All Positions):
+1. QUALIFICATIONS & EDUCATION:
+   - Relevant degrees, certifications, licenses
+   - Educational background match with job requirements
+   - Professional training and continuous learning
+
+2. EXPERIENCE & EXPERTISE:
+   - Years of relevant experience
+   - Industry/domain experience match
+   - Progression and career growth
+   - Specific skills mentioned in job description
+
+3. TECHNICAL/PROFESSIONAL SKILLS:
+   - Core competencies required for the role
+   - Tools, technologies, methodologies (if applicable)
+   - Specialized knowledge or techniques
+
+4. ACHIEVEMENTS & IMPACT:
+   - Quantifiable results and accomplishments
+   - Projects, publications, awards
+   - Leadership and initiative
+
+5. SOFT SKILLS & FIT:
+   - Communication abilities
+   - Teamwork and collaboration
+   - Problem-solving approach
+   - Cultural and organizational fit indicators
 
 SCORING SCALE:
-- 90-100: Excellent match - specialization perfect, extensive relevant experience
-- 75-89: Strong match - right specialization, good experience level
-- 60-74: Good match - relevant medical background, some experience
-- 40-59: Moderate match - general medical background, limited specialty match
-- 20-39: Weak match - different specialization or insufficient experience
-- 0-19: Poor match - unrelated medical field or entry-level when senior needed
+- 90-100: Excellent match - Perfect fit with extensive relevant experience
+- 75-89: Strong match - Right qualifications and good experience level
+- 60-74: Good match - Relevant background with some experience
+- 40-59: Moderate match - General background, limited specific match
+- 20-39: Weak match - Different field or insufficient experience
+- 0-19: Poor match - Unrelated background or major gaps
 
-Analyze the medical qualifications and specialization match carefully.
+Analyze the candidate's qualifications, experience, and skills carefully against the specific job requirements.
 
 Respond with ONLY this JSON format:
-{{"score": 85, "reasoning": "Brief explanation focusing on medical qualifications and specialty match"}}
+{{"score": 85, "reasoning": "Brief explanation focusing on key qualifications and experience match"}}
 
 JSON only:"""
 
             response = fw.chat.completions.create(
                 model=LLM_MODEL,
                 messages=[
-                    {"role": "system", "content": "You are an expert medical recruiter with deep knowledge of healthcare qualifications and specializations. Respond only with valid JSON."},
+                    {"role": "system", "content": "You are an expert recruiter with deep knowledge across all industries and specializations. Respond only with valid JSON."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.2,
@@ -412,8 +431,8 @@ JSON only:"""
 
 def analyze_with_keywords(cv_text, job_description):
     """
-    REMOVED - No keyword fallback for medical CVs.
-    Medical qualifications require proper AI analysis, not keyword matching.
+    REMOVED - Keyword matching is not reliable for proper CV ranking.
+    AI analysis provides better results across all specialties.
     """
     return 0
 
@@ -423,7 +442,8 @@ def analyze_with_keywords(cv_text, job_description):
 def rank_with_embeddings(cvs, job_description, top_k=5):
     """
     Rank CVs using semantic embeddings.
-    Now includes CV validation to filter out invalid CVs.
+    Works for all types of recruitment.
+    Includes CV validation to filter out invalid CVs.
     """
     # Load job description if it's a file path
     jd_text = load_job_description(job_description)
@@ -502,7 +522,7 @@ def rank_with_embeddings(cvs, job_description, top_k=5):
 # ----------------------------
 def save_results_to_excel(results_list, job_description=None, output_dir=".", output_path=None):
     """
-    Save ranking results to Excel file.
+    Save ranking results to Excel file with professional formatting.
     """
     df_out = pd.DataFrame(results_list)
 
@@ -523,6 +543,7 @@ def save_results_to_excel(results_list, job_description=None, output_dir=".", ou
     for _, row in df_out.iterrows():
         ws.append([row.get(h, "") for h in headers])
 
+    # Color coding based on scores
     for i, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=len(headers)), start=2):
         status = ws[f"C{i}"].value
         try:
@@ -531,20 +552,22 @@ def save_results_to_excel(results_list, job_description=None, output_dir=".", ou
             score = 0
 
         if status == "Match":
-            fill = PatternFill(start_color="C6EFCE", fill_type="solid")
+            fill = PatternFill(start_color="C6EFCE", fill_type="solid")  # Green
         elif score >= 40:
-            fill = PatternFill(start_color="FFEB9C", fill_type="solid")
+            fill = PatternFill(start_color="FFEB9C", fill_type="solid")  # Yellow
         else:
-            fill = PatternFill(start_color="F2DCDB", fill_type="solid")
+            fill = PatternFill(start_color="F2DCDB", fill_type="solid")  # Red
 
         for cell in row:
             cell.fill = fill
 
+        # Make CV links clickable
         cv_link = ws[f"E{i}"].value
         if cv_link and str(cv_link).startswith("http"):
             ws[f"E{i}"].hyperlink = cv_link
             ws[f"E{i}"].style = "Hyperlink"
 
+    # Summary sheet
     ws_summary = wb.create_sheet("Summary")
     avg_score = df_out["score"].astype(float).mean() if not df_out.empty else 0
     valid_cvs = len(df_out[df_out["score"] > 0])
@@ -554,22 +577,20 @@ def save_results_to_excel(results_list, job_description=None, output_dir=".", ou
     ws_summary["A1"], ws_summary["B1"] = "Total CVs", len(df_out)
     ws_summary["A2"], ws_summary["B2"] = "Valid CVs", valid_cvs
     ws_summary["A3"], ws_summary["B3"] = "Invalid CVs", invalid_cvs
-    ws_summary["A4"], ws_summary["B4"] = "Average Score (Valid)", avg_score
+    ws_summary["A4"], ws_summary["B4"] = "Average Score (Valid)", round(avg_score, 2)
     
     if top_candidate is not None:
         ws_summary["A6"], ws_summary["B6"] = "Top Candidate", top_candidate.get("name", "Unknown")
         ws_summary["A7"], ws_summary["B7"] = "Top Score", top_candidate.get("score", 0)
         ws_summary["A8"], ws_summary["B8"] = "Top CV Link", top_candidate.get("cv_link", "")
 
+    # Generate output filename
     if output_path:
         final_path = output_path
     else:
-        # Generate filename from job description
         if job_description and os.path.exists(job_description):
-            # If it's a file, use the filename without extension
             job_name = os.path.splitext(os.path.basename(job_description))[0]
         elif job_description:
-            # If it's text, use first 50 chars
             job_name = job_description[:50]
         else:
             job_name = "Job"
@@ -580,5 +601,5 @@ def save_results_to_excel(results_list, job_description=None, output_dir=".", ou
 
     wb.save(final_path)
     print(f"✅ Results saved to {final_path}")
-    print(f"📊 Summary: {valid_cvs} valid CVs, {invalid_cvs} invalid CVs")
+    print(f"📊 Summary: {valid_cvs} valid CVs, {invalid_cvs} invalid CVs, Average Score: {round(avg_score, 2)}/100")
     return df_out, final_path
