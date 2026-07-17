@@ -20,7 +20,7 @@ An AI-powered CV ranking application that analyzes candidate resumes against job
 
 1. **Clone or navigate to the project directory**:
    ```bash
-   cd "d:\Andalusia\CV-Ranker\latest version"
+   cd "d:\........\CV-Ranker\........"
    ```
 
 2. **Create a virtual environment**:
